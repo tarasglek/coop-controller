@@ -1,10 +1,11 @@
 var SunCalc = require("suncalc");
 var Promise = require("bluebird");
 const http = require('http')
-var url = require('url');  
+var url = require('url');
 var fs = Promise.promisifyAll(require("fs"));
 
 const doorGpioPin = 21;
+const waterGpioPin = 20;
 
 var actions = {"open":"0", "close":"1"};
 var pinValues = {"0":"open", "1":"close"};
@@ -15,7 +16,7 @@ function pinDir(pinNumber) {
 }
 
 function pinValueFile(pinNumber) {
-  return pinDir(pinNumber) + "value";  
+  return pinDir(pinNumber) + "value";
 }
 
 function pinDirectionFile(pinNumber) {
@@ -24,12 +25,12 @@ function pinDirectionFile(pinNumber) {
 
 function readPin(pinNumber) {
   return fs.readFileAsync(pinValueFile(pinNumber)).
-    // then(value => {console.error(`readPin ${pinNumber}=${value}`); return value})
     then(value => value.toString().trim())
 }
 
 function setupPin(pinNumber) {
   const pinExport = "/sys/class/gpio/export";
+  console.error(pinExport, "adding pin " + pinNumber);
   return fs.writeFileAsync(pinExport, pinNumber).delay(1000)
 }
 
@@ -52,10 +53,9 @@ function getOpenCloseTimes() {
 function setPin(pinNumber, value) {
   return fs.readFileAsync(pinDirectionFile(pinNumber)).catch(e => {
     if (e.code === 'ENOENT') {
-      console.error(pinExport, "adding pin " + pinNumber);
       return setupPin(pinNumber).then(() => fs.readFileAsync(pinDirectionFile(pinNumber)));
     } else {
-      console.error("readFileAsync else",e, e.code); 
+      console.error("readFileAsync else",e, e.code);
       throw e;
     }
   }).then(x => {
@@ -67,13 +67,27 @@ function setPin(pinNumber, value) {
     }
   }).then(_ => readPin(pinNumber)).
     then(oldValue => {
-      console.error(`oldValue=${oldValue}`)
-      if (oldValue == value) 
+      if (oldValue == value)
         return //console.error(pinValue, "already set to " + actionPinValue + ". " + action + ". Nothing to do");
       return fs.writeFileAsync(pinValueFile(pinNumber), value).
          then(_ => console.error(pinValueFile(pinNumber), oldValue + " => " + value, new Date()))
     }).
     catch(e => console.error(pinValueFile(pinNumber), " failed to set to " + actions[value],e, e.stack))
+}
+
+function ensureDoor(openOrClose) {
+  return readPin(doorGpioPin).then(doorValue => {
+    if (pinValues[doorValue] == openOrClose) {
+      // pin is already at desired value
+      return Promise.resolve()
+    } else {
+      console.error(openOrClose, "open", openOrClose == "open")
+      if (openOrClose == "open") {
+        setPin(waterGpioPin, actions['open']).delay(1000*60).then(_ => setPin(waterGpioPin, actions['close']))
+      }
+      return setPin(doorGpioPin, actions[openOrClose])
+    }
+  })
 }
 
 function loop() {
@@ -83,15 +97,12 @@ function loop() {
     "open" : "close";
   if (gOverride)
     action = gOverride;
-  readPin(doorGpioPin).then(x =>
-    console.error(`pin ${doorGpioPin} == ${x}`)
-  )
-  setPin(doorGpioPin,actions[action]).delay(1000).then(loop)
+  ensureDoor(action).delay(1000).then(loop)
 }
 
 
 function server() {
-  const requestHandler = (request, response) => {  
+  const requestHandler = (request, response) => {
     var parts = url.parse(request.url, false);
     if (parts.pathname != "/") {
       response.statusCode = 404;
@@ -105,7 +116,8 @@ function server() {
         gOverride = null;
       } else if (query in actions) {
         gOverride = query;
-        firstPromise = fs.writeFileAsync(pinValueFile, actions[query]).catch(e => {
+        console.error(`action: ${query}`)
+        firstPromise = ensureDoor(query).catch(e => {
               response.statusCode = 500;
               response.end(e.toString())
             }).delay(1000)
@@ -113,10 +125,8 @@ function server() {
       return firstPromise.then(x => {
         response.writeHead(302, {'Location': '/' });
         response.end();
-      })      
+      })
     }
-    console.log(request.url, parts.query, parts.pathname)
-    
     readPin(doorGpioPin).then(state => {
       var times = getOpenCloseTimes()
       var autoString = gOverride ? "manual" : "auto"
@@ -125,7 +135,7 @@ function server() {
       `<html>
       <head>
       <title>coop: ${stateString}</title>
-      <meta name="viewport" content="width=device-width; initial-scale=1.0; maximum-scale=1.0; user-scalable=0;"/> 
+      <meta name="viewport" content="width=device-width; initial-scale=1.0; maximum-scale=1.0; user-scalable=0;"/>
       <style>
 button {
     width:100%;
@@ -135,7 +145,7 @@ button {
 .${autoString}
 { font-weight: bold;
   text-transform: uppercase;
-   } 
+   }
 </style>
       </head>
       <body>
@@ -158,7 +168,7 @@ button {
   const server = http.createServer(requestHandler)
 
   function listen(port) {
-    server.listen(port, (err) => {  
+    server.listen(port, (err) => {
       if (err) {
         console.log('failed to listen on port ' + port, err)
         if (port == 80)
@@ -174,4 +184,4 @@ button {
 
 console.error("starting coop controller");
 server();
-loop();     
+loop();
