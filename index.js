@@ -4,18 +4,39 @@ const http = require('http')
 var url = require('url');  
 var fs = Promise.promisifyAll(require("fs"));
 
-const pinNumber = 7;
-const pinExport = "/sys/class/gpio/export";
-const pinDir = "/sys/class/gpio/gpio" + pinNumber + "/";
-const pinValueFile = pinDir + "value";
-const pinDirection = pinDir + "direction";
+const doorGpioPin = 21;
 
 var actions = {"open":"0", "close":"1"};
 var pinValues = {"0":"open", "1":"close"};
 var gOverride = null;
 
-function readState() {
-  return fs.readFileAsync(pinValueFile).then(x => x.toString().trim())
+function pinDir(pinNumber) {
+  return "/sys/class/gpio/gpio" + pinNumber + "/";
+}
+
+function pinValueFile(pinNumber) {
+  return pinDir(pinNumber) + "value";  
+}
+
+function pinDirectionFile(pinNumber) {
+  return pinDir(pinNumber) + "direction";
+}
+
+function readPin(pinNumber) {
+  return fs.readFileAsync(pinValueFile(pinNumber)).
+    // then(value => {console.error(`readPin ${pinNumber}=${value}`); return value})
+    then(value => value.toString().trim())
+}
+
+function setupPin(pinNumber) {
+  const pinExport = "/sys/class/gpio/export";
+  return fs.writeFileAsync(pinExport, pinNumber).delay(1000)
+}
+
+
+function setDirection(pinNumber, direction) {
+  var file = pinDirectionFile(pinNumber)
+  return fs.writeFileAsync(file, `${direction}\n`).then(x=>console.log(`${direction} => ${file}`));
 }
 
 function getOpenCloseTimes() {
@@ -27,28 +48,12 @@ function getOpenCloseTimes() {
       close: times.sunset
     }
 }
-function loop() {
-  var times = getOpenCloseTimes()
-  var now = new Date();
-  var action = (now.getTime() > times.open.getTime() && now.getTime() < times.close.getTime()) ?
-    "open" : "close";
-  if (gOverride)
-    action = gOverride;
-  var actionPinValue = actions[action];  
 
-  function setDirection() {
-      return fs.writeFileAsync(pinDirection, "out\n").then(x=>console.log(pinDirection));
-  }
-  
-  function setupPin() {
-    return fs.writeFileAsync(pinExport, pinNumber).delay(1000).
-      then(setDirection);
-  }
-  
-  fs.readFileAsync(pinDirection).catch(e => {
+function setPin(pinNumber, value) {
+  return fs.readFileAsync(pinDirectionFile(pinNumber)).catch(e => {
     if (e.code === 'ENOENT') {
       console.error(pinExport, "adding pin " + pinNumber);
-      return setupPin().then(() => fs.readFileAsync(pinDirection));
+      return setupPin(pinNumber).then(() => fs.readFileAsync(pinDirectionFile(pinNumber)));
     } else {
       console.error("readFileAsync else",e, e.code); 
       throw e;
@@ -58,19 +63,30 @@ function loop() {
     if (x == "out") {
       return Promise.resolve();
     } else {
-      console.error(pinDirection, "out => in")
-      return setDirection();
+      return setDirection(pinNumber, "out");
     }
-  }).then(readState).
-    then(x => {
-      if (x == actionPinValue) 
+  }).then(_ => readPin(pinNumber)).
+    then(oldValue => {
+      console.error(`oldValue=${oldValue}`)
+      if (oldValue == value) 
         return //console.error(pinValue, "already set to " + actionPinValue + ". " + action + ". Nothing to do");
-      return fs.writeFileAsync(pinValueFile, actionPinValue).
-         then(_ => console.error(pinValueFile, x + " => " + actionPinValue, action, now))
+      return fs.writeFileAsync(pinValueFile(pinNumber), value).
+         then(_ => console.error(pinValueFile(pinNumber), oldValue + " => " + value, new Date()))
     }).
-    catch(e => console.error(pinValueFile, " failed to set to " + actions[action],e, e.stack)).
-    delay(1000).
-    then(loop)
+    catch(e => console.error(pinValueFile(pinNumber), " failed to set to " + actions[value],e, e.stack))
+}
+
+function loop() {
+  var times = getOpenCloseTimes()
+  var now = new Date();
+  var action = (now.getTime() > times.open.getTime() && now.getTime() < times.close.getTime()) ?
+    "open" : "close";
+  if (gOverride)
+    action = gOverride;
+  readPin(doorGpioPin).then(x =>
+    console.error(`pin ${doorGpioPin} == ${x}`)
+  )
+  setPin(doorGpioPin,actions[action]).delay(1000).then(loop)
 }
 
 
@@ -101,7 +117,7 @@ function server() {
     }
     console.log(request.url, parts.query, parts.pathname)
     
-    readState().then(state => {
+    readPin(doorGpioPin).then(state => {
       var times = getOpenCloseTimes()
       var autoString = gOverride ? "manual" : "auto"
       var stateString = pinValues[state]
