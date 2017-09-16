@@ -24,8 +24,24 @@ function pinDirectionFile(pinNumber) {
 }
 
 function readPin(pinNumber) {
-  return fs.readFileAsync(pinValueFile(pinNumber)).
-    then(value => value.toString().trim())
+  return (
+    fs.readFileAsync(pinDirectionFile(pinNumber)).catch(e => {
+      if (e.code === 'ENOENT') {
+        return setupPin(pinNumber).then(() => fs.readFileAsync(pinDirectionFile(pinNumber)));
+      } else {
+        console.error("readFileAsync else",e, e.code);
+        throw e;
+      }
+    }).then(x => {
+      x = x.toString().trim();
+      if (x == "out") {
+        return Promise.resolve();
+      } else {
+        return setDirection(pinNumber, "out");
+      }
+    }).then(_ => fs.readFileAsync(pinValueFile(pinNumber))).
+      then(value => value.toString().trim())
+  )
 }
 
 function setupPin(pinNumber) {
@@ -51,28 +67,16 @@ function getOpenCloseTimes() {
 }
 
 function setPin(pinNumber, value) {
-  return fs.readFileAsync(pinDirectionFile(pinNumber)).catch(e => {
-    if (e.code === 'ENOENT') {
-      return setupPin(pinNumber).then(() => fs.readFileAsync(pinDirectionFile(pinNumber)));
-    } else {
-      console.error("readFileAsync else",e, e.code);
-      throw e;
-    }
-  }).then(x => {
-    x = x.toString().trim();
-    if (x == "out") {
-      return Promise.resolve();
-    } else {
-      return setDirection(pinNumber, "out");
-    }
-  }).then(_ => readPin(pinNumber)).
-    then(oldValue => {
-      if (oldValue == value)
-        return //console.error(pinValue, "already set to " + actionPinValue + ". " + action + ". Nothing to do");
-      return fs.writeFileAsync(pinValueFile(pinNumber), value).
-         then(_ => console.error(pinValueFile(pinNumber), oldValue + " => " + value, new Date()))
-    }).
-    catch(e => console.error(pinValueFile(pinNumber), " failed to set to " + actions[value],e, e.stack))
+  return (
+    readPin(pinNumber).
+      then(oldValue => {
+        if (oldValue == value)
+          return //console.error(pinValue, "already set to " + actionPinValue + ". " + action + ". Nothing to do");
+        return fs.writeFileAsync(pinValueFile(pinNumber), value).
+          then(_ => console.error(pinValueFile(pinNumber), oldValue + " => " + value, new Date()))
+      }).
+      catch(e => console.error(pinValueFile(pinNumber), " failed to set to " + actions[value],e, e.stack))
+  )
 }
 
 function ensureDoor(openOrClose) {
@@ -83,7 +87,7 @@ function ensureDoor(openOrClose) {
     } else {
       console.error(openOrClose, "open", openOrClose == "open")
       if (openOrClose == "open") {
-        setPin(waterGpioPin, actions['open']).delay(1000*60).then(_ => setPin(waterGpioPin, actions['close']))
+        setPin(waterGpioPin, actions['open']).delay(1000*60).then(_ => setPin(waterGpioPin, actions['close'])).catch(err => console.error(err.stack))
       }
       return setPin(doorGpioPin, actions[openOrClose])
     }
@@ -97,7 +101,7 @@ function loop() {
     "open" : "close";
   if (gOverride)
     action = gOverride;
-  ensureDoor(action).delay(1000).then(loop)
+  ensureDoor(action).delay(1000).catch(err => console.error(err.stack)).then(loop)
 }
 
 
