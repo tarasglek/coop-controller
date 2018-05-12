@@ -6,6 +6,7 @@ var fs = Promise.promisifyAll(require("fs"));
 
 const doorGpioPin = 21;
 const waterGpioPin = 20;
+const waterOnTime = 5*1000*60;
 
 var actions = {"open":"0", "close":"1"};
 var pinValues = {"0":"open", "1":"close"};
@@ -87,7 +88,7 @@ function ensureDoor(openOrClose) {
     } else {
       console.error(openOrClose, "open", openOrClose == "open")
       if (openOrClose == "open") {
-        setPin(waterGpioPin, actions['open']).delay(1000*60).then(_ => setPin(waterGpioPin, actions['close'])).catch(err => console.error(err.stack))
+        setPin(waterGpioPin, actions['open']).delay(waterOnTime).then(_ => setPin(waterGpioPin, actions['close'])).catch(err => console.error(err.stack))
       }
       return setPin(doorGpioPin, actions[openOrClose])
     }
